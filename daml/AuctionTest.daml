@@ -1,0 +1,137 @@
+module AuctionTest where
+
+import Auction
+import Daml.Script
+
+testAuction : Script ()
+testAuction = do
+  seller <- allocateParty "Auctioneer"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  carol <- allocateParty "Carol"
+  outsider <- allocateParty "Outsider"
+
+  submitMustFail seller do
+    createCmd AuctionSetup with
+      auctioneer = seller; bidder1 = alice; bidder2 = alice; bidder3 = carol; title = "Invalid"
+
+  setup1 <- submit seller do
+    createCmd AuctionSetup with
+      auctioneer = seller; bidder1 = alice; bidder2 = bob; bidder3 = carol; title = "First"
+  a <- submit seller do exerciseCmd setup1 Open
+  setup2 <- submit seller do
+    createCmd AuctionSetup with
+      auctioneer = seller; bidder1 = alice; bidder2 = bob; bidder3 = carol; title = "Second"
+  other <- submit seller do exerciseCmd setup2 Open
+
+  None <- queryContractId outsider a.auction
+  None <- queryContractId outsider a.sale
+  None <- queryContractId bob a.invite1
+  None <- queryContractId outsider a.invite1
+  Some _ <- queryContractId alice a.auction
+
+  submitMustFail bob do exerciseCmd a.invite1 SubmitBid with amount = 99.0
+  submitMustFail alice do exerciseCmd a.invite1 SubmitBid with amount = 0.0
+  submitMustFail alice do
+    createCmd Bid with
+      auctioneer = seller; bidder = alice; auction = a.auction; invitation = a.invite1; amount = 500.0
+  one <- submit alice do exerciseCmd a.invite1 SubmitBid with amount = 10.0
+  submitMustFail alice do exerciseCmd a.invite1 SubmitBid with amount = 11.0
+  two <- submit bob do exerciseCmd a.invite2 SubmitBid with amount = 30.0
+  three <- submit carol do exerciseCmd a.invite3 SubmitBid with amount = 20.0
+  otherOne <- submit alice do exerciseCmd other.invite1 SubmitBid with amount = 50.0
+
+  Some _ <- queryContractId seller one
+  Some _ <- queryContractId alice one
+  None <- queryContractId bob one
+  None <- queryContractId carol one
+  None <- queryContractId outsider one
+  submitMustFail bob do archiveCmd one
+  submitMustFail alice do archiveCmd two
+  submitMustFail alice do
+    exerciseCmd a.sale Close with bid1 = one; bid2 = two; bid3 = three
+  submitMustFail seller do
+    exerciseCmd a.sale Close with bid1 = otherOne; bid2 = two; bid3 = three
+  submitMustFail seller do
+    exerciseCmd a.sale Close with bid1 = one; bid2 = one; bid3 = three
+
+  -- Even an extra auctioneer-created invitation cannot bypass the open marker.
+  extra <- submit seller do
+    createCmd Invitation with auctioneer = seller; bidder = alice; auction = a.auction
+  closeTree <- submitTree seller do
+    exerciseCmd a.sale Close with bid1 = one; bid2 = two; bid3 = three
+  [ExercisedEvent closeEvent] <- pure closeTree.rootEvents
+  assert (closeEvent.choice == "Close")
+  let archives = [event | ExercisedEvent event <- closeEvent.childEvents, event.choice == "Archive"]
+  [archiveEvent] <- pure archives
+  assert (null archiveEvent.childEvents)
+  submitMustFail alice do exerciseCmd extra SubmitBid with amount = 100.0
+  submitMustFail seller do exerciseCmd a.sale Close with bid1 = one; bid2 = two; bid3 = three
+
+  Some _ <- queryContractId alice one
+  Some _ <- queryContractId seller one
+  Some _ <- queryContractId bob two
+  None <- queryContractId alice two
+  Some _ <- queryContractId alice other.auction
+  Some _ <- queryContractId alice otherOne
+  lossesAlice <- query @Loss alice
+  lossesBob <- query @Loss bob
+  lossesCarol <- query @Loss carol
+  lossesOutsider <- query @Loss outsider
+  assert (length lossesAlice == 1 && null lossesBob && length lossesCarol == 1 && null lossesOutsider)
+  owesAlice <- query @Obligation alice
+  owesBob <- query @Obligation bob
+  owesCarol <- query @Obligation carol
+  assert (null owesAlice && length owesBob == 1 && null owesCarol)
+  [(obligation, terms)] <- pure owesBob
+  assert (terms.winner == bob && terms.amount == 30.0 && terms.auction == a.auction)
+
+  small <- submit seller do createCmd Credit with issuer = seller; owner = bob; amount = 29.0
+  funds <- submit seller do createCmd Credit with issuer = seller; owner = bob; amount = 40.0
+  aliceFunds <- submit seller do createCmd Credit with issuer = seller; owner = alice; amount = 40.0
+  wrongIssuer <- submit outsider do createCmd Credit with issuer = outsider; owner = bob; amount = 40.0
+  submitMustFail alice do exerciseCmd obligation Pay with credit = funds
+  submitMustFail bob do exerciseCmd obligation Pay with credit = small
+  submitMustFail bob do exerciseCmd obligation Pay with credit = aliceFunds
+  submitMustFail bob do exerciseCmd obligation Pay with credit = wrongIssuer
+  payment <- submit bob do exerciseCmd obligation Pay with credit = funds
+  None <- queryContractId bob obligation
+  None <- queryContractId bob funds
+  Some paid <- queryContractId bob payment
+  assert (paid.amount == 30.0)
+  None <- queryContractId alice payment
+  None <- queryContractId carol payment
+  bobCredits <- query @Credit bob
+  sellerCredits <- query @Credit seller
+  assert (any (\(_, c) -> c.owner == bob && c.amount == 10.0 && c.issuer == seller) bobCredits)
+  assert (any (\(_, c) -> c.owner == seller && c.amount == 30.0 && c.issuer == seller) sellerCredits)
+  submitMustFail bob do exerciseCmd obligation Pay with credit = small
+
+  otherTwo <- submit bob do exerciseCmd other.invite2 SubmitBid with amount = 12.0
+  otherThree <- submit carol do exerciseCmd other.invite3 SubmitBid with amount = 20.0
+  submit seller do exerciseCmd other.sale Close with bid1 = otherOne; bid2 = otherTwo; bid3 = otherThree
+  aliceSecond <- query @Obligation alice
+  bobSecond <- query @Loss bob
+  assert (length aliceSecond == 1 && length bobSecond == 1)
+  [(_, secondTerms)] <- pure aliceSecond
+  assert (secondTerms.auction == other.auction && secondTerms.amount == 50.0)
+  pure ()
+
+testTie : Script ()
+testTie = do
+  seller <- allocateParty "Seller"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  carol <- allocateParty "Carol"
+  setup <- submit seller do
+    createCmd AuctionSetup with
+      auctioneer = seller; bidder1 = alice; bidder2 = bob; bidder3 = carol; title = "Tie"
+  a <- submit seller do exerciseCmd setup Open
+  one <- submit alice do exerciseCmd a.invite1 SubmitBid with amount = 10.0
+  two <- submit bob do exerciseCmd a.invite2 SubmitBid with amount = 10.0
+  three <- submit carol do exerciseCmd a.invite3 SubmitBid with amount = 5.0
+  submit seller do exerciseCmd a.sale Close with bid1 = one; bid2 = two; bid3 = three
+  aliceObligations <- query @Obligation alice
+  bobObligations <- query @Obligation bob
+  assert (length aliceObligations == 1 && null bobObligations)
+  pure ()

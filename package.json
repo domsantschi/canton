@@ -1,0 +1,11 @@
+{
+  "name": "local-private-auction-demo",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node backend/server.js",
+    "test": "node --test backend/*.test.js"
+  },
+  "engines": { "node": ">=18" }
+}

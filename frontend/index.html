@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Local private auction demo</title><link rel="stylesheet" href="/style.css"></head>
+<body>
+<header><div class="wrap"><p class="eyebrow">CANTON · LOCAL DEMO ONLY</p><h1>Private auction</h1><p>Explore party-filtered contracts on your local Canton participant.</p></div></header>
+<main class="wrap">
+  <div class="warning"><strong>Not authentication.</strong> Anyone using this local demo can switch identities. It signs unsafe LocalNet JWTs on the server and controls all five parties. Never expose this app or use it for production.</div>
+  <section class="panel">
+    <div class="row"><div><h2>1. Connect to LocalNet</h2><p>Uses only localhost:3975. Build the model first with <code>dpm build</code> (SDK 3.4.11). Setup requires and uploads the DAR, then provisions five party users.</p></div><button id="setup">Connect / retry setup</button></div>
+    <p id="status" role="status">Not connected.</p>
+  </section>
+  <section class="panel">
+    <div class="row"><div><h2>2. Switch perspective</h2><p>Each view is queried with its own user and one party filter. Outsider should see no auction contracts.</p></div><label>Viewing as <select id="party" disabled><option value="auctioneer">Auctioneer</option><option value="bidder1">Alice</option><option value="bidder2">Bob</option><option value="bidder3">Carol</option><option value="outsider">Outsider</option></select></label><button id="refresh" disabled>Refresh</button></div>
+    <p id="identity"></p>
+    <h3>Active contracts <span id="offset"></span></h3><div id="contracts" class="contracts"><p>Connect to view contracts.</p></div>
+  </section>
+  <section class="panel">
+    <h2>3. Act as the selected party</h2>
+    <p>Open as auctioneer and choose Alice, Bob and Carol in invitation order; that order breaks ties. Submit one bid per bidder, then close as auctioneer with bids ordered by invitation. Issue credit to the winner as auctioneer, then pay as winner. Credit is issuer-backed ledger credit, not cash.</p>
+    <label>Action <select id="action"><option value="open">Open auction (auctioneer)</option><option value="bid">Submit bid (invited bidder)</option><option value="close">Close auction (auctioneer)</option><option value="credit">Issue credit (auctioneer)</option><option value="pay">Pay obligation (winner)</option><option value="tamper-bid">Attempt bid tampering: Archive (expected rejection)</option></select></label>
+    <form id="form"><div id="fields"></div><button id="submit" disabled>Submit to ledger</button></form>
+    <p class="hint">To test bid tampering, paste a saved Bid ID while viewing as one party. Bid Archive requires both signatories; another bidder's bid may also be invisible. Rejection is expected, not guaranteed by this interface. Errors are returned by the ledger; successful actions refresh this view.</p>
+  </section>
+  <section class="panel"><h2>Action / error log</h2><p>Ledger rejections appear here. Log entries can reveal private information; clear them before switching perspectives.</p><button id="clear">Clear log</button><pre id="log" aria-live="polite"></pre></section>
+</main><script src="/app.js"></script>
+</body></html>

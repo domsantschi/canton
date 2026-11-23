@@ -1,0 +1,188 @@
+module Auction where
+
+-- A common, amount-free liveness marker. Its Archive exercise has no
+-- arguments or results containing any bid or outcome.
+template AuctionOpen
+  with
+    auctioneer : Party
+    bidders : [Party]
+    title : Text
+  where
+    signatory auctioneer
+    observer bidders
+
+template Invitation
+  with
+    auctioneer : Party
+    bidder : Party
+    auction : ContractId AuctionOpen
+  where
+    signatory auctioneer
+    observer bidder
+
+    choice SubmitBid : ContractId Bid
+      with
+        amount : Decimal
+      controller bidder
+      do
+        assertMsg "Bid must be positive" (amount > 0.0)
+        open <- fetch auction
+        assertMsg "Wrong auctioneer or bidder" (open.auctioneer == auctioneer && elem bidder open.bidders)
+        create Bid with auctioneer; bidder; auction; invitation = self; amount
+
+template Bid
+  with
+    auctioneer : Party
+    bidder : Party
+    auction : ContractId AuctionOpen
+    invitation : ContractId Invitation
+    amount : Decimal
+  where
+    signatory auctioneer, bidder
+    ensure amount > 0.0
+
+template AuctionSetup
+  with
+    auctioneer : Party
+    bidder1 : Party
+    bidder2 : Party
+    bidder3 : Party
+    title : Text
+  where
+    signatory auctioneer
+    ensure bidder1 /= bidder2 && bidder1 /= bidder3 && bidder2 /= bidder3
+      && auctioneer /= bidder1 && auctioneer /= bidder2 && auctioneer /= bidder3
+
+    choice Open : OpenedAuction
+      controller auctioneer
+      do
+        auction <- create AuctionOpen with
+          auctioneer; bidders = [bidder1, bidder2, bidder3]; title
+        invite1 <- create Invitation with auctioneer; bidder = bidder1; auction
+        invite2 <- create Invitation with auctioneer; bidder = bidder2; auction
+        invite3 <- create Invitation with auctioneer; bidder = bidder3; auction
+        sale <- create Auction with
+          auctioneer; auction; bidder1; bidder2; bidder3; invite1; invite2; invite3
+        pure OpenedAuction with auction; sale; invite1; invite2; invite3
+
+data OpenedAuction = OpenedAuction
+  with
+    auction : ContractId AuctionOpen
+    sale : ContractId Auction
+    invite1 : ContractId Invitation
+    invite2 : ContractId Invitation
+    invite3 : ContractId Invitation
+  deriving (Eq, Show)
+
+-- Only the auctioneer sees this contract and its Close choice.
+template Auction
+  with
+    auctioneer : Party
+    auction : ContractId AuctionOpen
+    bidder1 : Party
+    bidder2 : Party
+    bidder3 : Party
+    invite1 : ContractId Invitation
+    invite2 : ContractId Invitation
+    invite3 : ContractId Invitation
+  where
+    signatory auctioneer
+
+    choice Close : ()
+      with
+        bid1 : ContractId Bid
+        bid2 : ContractId Bid
+        bid3 : ContractId Bid
+      controller auctioneer
+      do
+        b1 <- fetch bid1
+        b2 <- fetch bid2
+        b3 <- fetch bid3
+        assertMsg "Invalid first bid" (b1.auctioneer == auctioneer && b1.auction == auction && b1.bidder == bidder1 && b1.invitation == invite1)
+        assertMsg "Invalid second bid" (b2.auctioneer == auctioneer && b2.auction == auction && b2.bidder == bidder2 && b2.invitation == invite2)
+        assertMsg "Invalid third bid" (b3.auctioneer == auctioneer && b3.auction == auction && b3.bidder == bidder3 && b3.invitation == invite3)
+        -- Earlier invitation wins a tie.
+        let winner = if b1.amount >= b2.amount && b1.amount >= b3.amount
+              then b1 else if b2.amount >= b3.amount then b2 else b3
+        exercise auction Archive
+        _ <- create Obligation with
+          auctioneer; winner = winner.bidder; auction; amount = winner.amount
+        if winner.bidder /= bidder1 then do
+          _ <- create Loss with auctioneer; bidder = bidder1; auction
+          pure ()
+        else pure ()
+        if winner.bidder /= bidder2 then do
+          _ <- create Loss with auctioneer; bidder = bidder2; auction
+          pure ()
+        else pure ()
+        if winner.bidder /= bidder3 then do
+          _ <- create Loss with auctioneer; bidder = bidder3; auction
+          pure ()
+        else pure ()
+
+template Loss
+  with
+    auctioneer : Party
+    bidder : Party
+    auction : ContractId AuctionOpen
+  where
+    signatory auctioneer
+    observer bidder
+
+-- Issuer-backed ledger credit, not an external cash transfer.
+template Credit
+  with
+    issuer : Party
+    owner : Party
+    amount : Decimal
+  where
+    signatory issuer
+    observer owner
+    ensure amount > 0.0
+
+    choice Transfer : (ContractId Credit, Optional (ContractId Credit))
+      with
+        recipient : Party
+        quantity : Decimal
+      controller owner
+      do
+        assertMsg "Invalid transfer amount" (quantity > 0.0 && quantity <= amount)
+        paid <- create Credit with issuer; owner = recipient; amount = quantity
+        change <- if quantity < amount
+          then do
+            cid <- create Credit with issuer; owner; amount = amount - quantity
+            pure (Some cid)
+          else pure None
+        pure (paid, change)
+
+template Obligation
+  with
+    auctioneer : Party
+    winner : Party
+    auction : ContractId AuctionOpen
+    amount : Decimal
+  where
+    signatory auctioneer
+    observer winner
+    ensure amount > 0.0
+
+    choice Pay : ContractId Payment
+      with
+        credit : ContractId Credit
+      controller winner
+      do
+        funds <- fetch credit
+        assertMsg "Credit must belong to winner and be issued by auctioneer"
+          (funds.owner == winner && funds.issuer == auctioneer && funds.amount >= amount)
+        exercise credit Transfer with recipient = auctioneer; quantity = amount
+        create Payment with auctioneer; winner; auction; amount
+
+template Payment
+  with
+    auctioneer : Party
+    winner : Party
+    auction : ContractId AuctionOpen
+    amount : Decimal
+  where
+    signatory auctioneer
+    observer winner
